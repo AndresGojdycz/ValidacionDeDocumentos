@@ -5,7 +5,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { CheckCircleIcon, XCircleIcon, AlertCircleIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { getDocuments, getCompanyType, setCompanyType, resetCompanyType } from "@/app/actions"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { getDocuments, getCompanyType, setCompanyType, resetCompanyType, setMaximoEndeudamiento, getMaximoEndeudamiento } from "@/app/actions"
 import {
   Dialog,
   DialogContent,
@@ -27,37 +29,69 @@ type Document = {
   documentYear?: number
 }
 
-export function FinancialDashboard() {
-  const [documents, setDocuments] = useState<Document[]>([])
-  const [loading, setLoading] = useState(true)
+interface FinancialDashboardProps {
+  documents: Document[];
+  isLoadingDocuments: boolean;
+  onCompanyTypeChange: () => void; // Callback to refresh docs if needed after type change
+}
+
+export function FinancialDashboard({ documents, isLoadingDocuments, onCompanyTypeChange }: FinancialDashboardProps) {
+  const [loadingAppConfig, setLoadingAppConfig] = useState(true);
   const [companyType, setCompanyTypeState] = useState<"regular" | "agricultural" | "new" | null>(null)
   const [showChangeDialog, setShowChangeDialog] = useState(false)
   const [pendingCompanyType, setPendingCompanyType] = useState<"regular" | "agricultural" | "new" | null>(null)
+  const [maximoEndeudamiento, setMaximoEndeudamientoState] = useState<number | null>(null)
+  const [endeudamientoInput, setEndeudamientoInput] = useState<string>("")
+  const LOCAL_STORAGE_KEY_MAX_ENDEUDAMIENTO = "maximoEndeudamientoPersistent";
 
   useEffect(() => {
-    loadDocuments()
+    // Load initial config from server and then try to override with localStorage if present
+    const loadInitialConfig = async () => {
+      setLoadingAppConfig(true);
+      try {
+        const [serverCompanyType, serverMaxEndeudamiento] = await Promise.all([
+          getCompanyType(),
+          getMaximoEndeudamiento(),
+        ]);
+        
+        setCompanyTypeState(serverCompanyType);
+
+        // Check localStorage for persisted maximoEndeudamiento
+        const persistedMaxEndeudamientoString = localStorage.getItem(LOCAL_STORAGE_KEY_MAX_ENDEUDAMIENTO);
+        let effectiveMaxEndeudamiento = serverMaxEndeudamiento;
+
+        if (persistedMaxEndeudamientoString !== null) {
+          const persistedAmount = parseFloat(persistedMaxEndeudamientoString);
+          if (!isNaN(persistedAmount) && persistedAmount >=0) {
+            effectiveMaxEndeudamiento = persistedAmount;
+            // If localStorage value is different from server, update server
+            if (persistedAmount !== serverMaxEndeudamiento) {
+              console.log(`Syncing localStorage Maximo Endeudamiento (${persistedAmount}) to server.`);
+              await setMaximoEndeudamiento(persistedAmount);
+            }
+          }
+        }
+        
+        setMaximoEndeudamientoState(effectiveMaxEndeudamiento);
+        setEndeudamientoInput(effectiveMaxEndeudamiento !== null ? effectiveMaxEndeudamiento.toString() : "");
+
+      } catch (error) {
+        console.error("Failed to load app config (company type/endeudamiento):", error);
+      } finally {
+        setLoadingAppConfig(false);
+      }
+    };
+
+    loadInitialConfig();
   }, [])
 
-  const loadDocuments = async () => {
-    setLoading(true)
-    try {
-      const [docs, type] = await Promise.all([getDocuments(), getCompanyType()])
-      setDocuments(docs)
-      setCompanyTypeState(type)
-    } catch (error) {
-      console.error("Failed to load documents:", error)
-    } finally {
-      setLoading(false)
-    }
-  }
-
   const getRequiredDocuments = () => {
-    const baseDocuments = ["Projected Cashflow", "Financial Statement", "Accountant Declaration"]
+    const baseDocuments = ["Flujo de Fondos", "Balance", "Informe Profesional"]
 
     if (companyType === "agricultural") {
       return [...baseDocuments, "DICOSE", "DETA"]
     } else if (companyType === "new") {
-      return ["Financial Statement (3 required)", "Accountant Declaration", "DICOSE"]
+      return ["Balance (3 requeridos)", "Informe Profesional", "DICOSE"]
     }
 
     return baseDocuments
@@ -107,13 +141,37 @@ export function FinancialDashboard() {
   const totalRequired = requiredDocuments.length
   const isComplete = completedCount === totalRequired
 
-  const handleCompanyTypeChange = async (newType: "regular" | "agricultural" | "new") => {
-    if (documents.length > 0) {
+  const handleCompanyTypeButtonClick = async (newType: "regular" | "agricultural" | "new") => {
+    if (documents.length > 0 && newType !== companyType) {
       setPendingCompanyType(newType)
       setShowChangeDialog(true)
-    } else {
+    } else if (newType !== companyType) {
       await setCompanyType(newType)
       setCompanyTypeState(newType)
+      
+      // Preserve Maximo Endeudamiento from localStorage if it exists
+      const persistedMaxEndeudamientoString = localStorage.getItem(LOCAL_STORAGE_KEY_MAX_ENDEUDAMIENTO);
+      if (persistedMaxEndeudamientoString !== null) {
+        const persistedAmount = parseFloat(persistedMaxEndeudamientoString);
+        if (!isNaN(persistedAmount) && persistedAmount >= 0) {
+          setMaximoEndeudamientoState(persistedAmount);
+          setEndeudamientoInput(persistedAmount.toString());
+          // Ensure server is also updated with this persisted value, though it should be if it was set correctly before
+          await setMaximoEndeudamiento(persistedAmount); 
+        } else {
+          // Invalid value in localStorage, clear it and reset states
+          localStorage.removeItem(LOCAL_STORAGE_KEY_MAX_ENDEUDAMIENTO);
+          setMaximoEndeudamientoState(null)
+          setEndeudamientoInput("")
+          await setMaximoEndeudamiento(null); // also clear on server
+        }
+      } else {
+        // No persisted value, so reset (this was the old behavior)
+        setMaximoEndeudamientoState(null)
+        setEndeudamientoInput("")
+        // No need to call setMaximoEndeudamiento(null) here as server state for it is not tied to company type directly
+      }
+      onCompanyTypeChange() // This will trigger document list refresh
     }
   }
 
@@ -121,9 +179,65 @@ export function FinancialDashboard() {
     if (pendingCompanyType) {
       await setCompanyType(pendingCompanyType)
       setCompanyTypeState(pendingCompanyType)
-      setShowChangeDialog(false)
       setPendingCompanyType(null)
+      setShowChangeDialog(false)
+
+      // Preserve Maximo Endeudamiento from localStorage if it exists
+      const persistedMaxEndeudamientoString = localStorage.getItem(LOCAL_STORAGE_KEY_MAX_ENDEUDAMIENTO);
+      if (persistedMaxEndeudamientoString !== null) {
+        const persistedAmount = parseFloat(persistedMaxEndeudamientoString);
+        if (!isNaN(persistedAmount) && persistedAmount >= 0) {
+          setMaximoEndeudamientoState(persistedAmount);
+          setEndeudamientoInput(persistedAmount.toString());
+          await setMaximoEndeudamiento(persistedAmount); // Ensure server reflects this persisted value
+        } else {
+          localStorage.removeItem(LOCAL_STORAGE_KEY_MAX_ENDEUDAMIENTO);
+          setMaximoEndeudamientoState(null)
+          setEndeudamientoInput("")
+          await setMaximoEndeudamiento(null); 
+        }
+      } else {
+        setMaximoEndeudamientoState(null)
+        setEndeudamientoInput("")
+      }
+      onCompanyTypeChange() // This will trigger document list refresh
     }
+  }
+
+  const handleResetCompanyType = async () => {
+    await resetCompanyType() // Resets company type on the server
+    setCompanyTypeState(null)  // Resets local company type state
+    
+    // User wants Maximo Endeudamiento to persist even when going back to company type selection.
+    // So, we no longer clear it from localStorage or server here.
+    // The useEffect that loads initial config will ensure it's reapplied from localStorage if present.
+    // If not in localStorage, it will correctly be null/empty as per server state (which should also be null if never set).
+
+    // The input field (endeudamientoInput) and local state (maximoEndeudamientoState)
+    // will be updated by the useEffect hook when it re-runs due to dependency changes
+    // or component re-evaluation after onCompanyTypeChange.
+    // For an immediate reflection if useEffect doesn't run as expected right away, 
+    // we can re-apply from localStorage here too, similar to other handlers.
+    const persistedMaxEndeudamientoString = localStorage.getItem(LOCAL_STORAGE_KEY_MAX_ENDEUDAMIENTO);
+    if (persistedMaxEndeudamientoString !== null) {
+      const persistedAmount = parseFloat(persistedMaxEndeudamientoString);
+      if (!isNaN(persistedAmount) && persistedAmount >= 0) {
+        setMaximoEndeudamientoState(persistedAmount);
+        setEndeudamientoInput(persistedAmount.toString());
+        // No need to call setMaximoEndeudamiento server action here, as it's not being changed by this action.
+        // The server should already have the correct persisted value from previous sets.
+      } else {
+        // Invalid value in localStorage, treat as if not set.
+        setMaximoEndeudamientoState(null);
+        setEndeudamientoInput("");
+      }
+    } else {
+      // No value in localStorage, ensure local state reflects this.
+      setMaximoEndeudamientoState(null);
+      setEndeudamientoInput("");
+    }
+
+    onCompanyTypeChange() // This will trigger document list refresh and potentially other effects.
   }
 
   const getCompanyTypeLabel = (type: string) => {
@@ -137,7 +251,37 @@ export function FinancialDashboard() {
     }
   }
 
-  if (loading) {
+  const handleEndeudamientoChange = async () => {
+    const amount = parseFloat(endeudamientoInput);
+    let success = false;
+    let finalAmountForStorage: number | null = null;
+
+    if (!isNaN(amount) && amount >= 0) {
+      const result = await setMaximoEndeudamiento(amount);
+      setMaximoEndeudamientoState(result.currentAmount); 
+      finalAmountForStorage = result.currentAmount;
+      success = result.success;
+    } else if (endeudamientoInput === "") {
+      const result = await setMaximoEndeudamiento(null);
+      setMaximoEndeudamientoState(result.currentAmount); 
+      finalAmountForStorage = null;
+      success = result.success;
+    } else {
+      console.error("Invalid endeudamiento input");
+      // Don't save invalid input to localStorage
+    }
+
+    if (success) {
+      if (finalAmountForStorage !== null) {
+        localStorage.setItem(LOCAL_STORAGE_KEY_MAX_ENDEUDAMIENTO, finalAmountForStorage.toString());
+      } else {
+        localStorage.removeItem(LOCAL_STORAGE_KEY_MAX_ENDEUDAMIENTO);
+      }
+      onCompanyTypeChange(); 
+    }
+  };
+
+  if (isLoadingDocuments || loadingAppConfig) {
     return (
       <Card>
         <CardHeader>
@@ -156,9 +300,30 @@ export function FinancialDashboard() {
           {isComplete
             ? "Todos los documentos requeridos han sido cargados y validados ✓"
             : `${completedCount} de ${totalRequired} documentos requeridos completados`}
+          {maximoEndeudamiento !== null && 
+            ` (Máximo Endeudamiento: ${maximoEndeudamiento.toLocaleString("es-UY", { style: "currency", currency: "UYU" })})`
+          }
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+          <Label htmlFor="maximoEndeudamientoInput" className="font-medium text-yellow-900 mb-2 block">Máximo Endeudamiento en el Sistema Financiero (Último Año)</Label>
+          <div className="flex items-center gap-2">
+            <Input 
+              type="number" 
+              id="maximoEndeudamientoInput"
+              placeholder="Ingrese el monto en UYU"
+              value={endeudamientoInput}
+              onChange={(e) => setEndeudamientoInput(e.target.value)}
+              className="flex-grow"
+            />
+            <Button onClick={handleEndeudamientoChange} size="sm">Establecer</Button>
+          </div>
+          <p className="text-xs text-yellow-700 mt-2">
+            Este monto determinará el tipo de informe requerido por el contador.
+          </p>
+        </div>
+
         {!companyType && (
           <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
             <h3 className="font-medium text-blue-900 mb-2">Seleccione el Tipo de Empresa</h3>
@@ -168,16 +333,16 @@ export function FinancialDashboard() {
                 variant="outline"
                 size="sm"
                 onClick={async () => {
-                  await handleCompanyTypeChange("regular")
+                  await handleCompanyTypeButtonClick("regular")
                 }}
               >
-                Empresa Regular
+                Empresa
               </Button>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={async () => {
-                  await handleCompanyTypeChange("agricultural")
+                  await handleCompanyTypeButtonClick("agricultural")
                 }}
               >
                 Empresa Agrícola
@@ -186,7 +351,7 @@ export function FinancialDashboard() {
                 variant="outline"
                 size="sm"
                 onClick={async () => {
-                  await handleCompanyTypeChange("new")
+                  await handleCompanyTypeButtonClick("new")
                 }}
               >
                 Empresa Nueva
@@ -214,7 +379,7 @@ export function FinancialDashboard() {
                     variant="outline"
                     size="sm"
                     onClick={async () => {
-                      await handleCompanyTypeChange("regular")
+                      await handleCompanyTypeButtonClick("regular")
                     }}
                   >
                     Regular
@@ -225,7 +390,7 @@ export function FinancialDashboard() {
                     variant="outline"
                     size="sm"
                     onClick={async () => {
-                      await handleCompanyTypeChange("agricultural")
+                      await handleCompanyTypeButtonClick("agricultural")
                     }}
                   >
                     Agrícola
@@ -236,7 +401,7 @@ export function FinancialDashboard() {
                     variant="outline"
                     size="sm"
                     onClick={async () => {
-                      await handleCompanyTypeChange("new")
+                      await handleCompanyTypeButtonClick("new")
                     }}
                   >
                     Nueva
@@ -248,10 +413,7 @@ export function FinancialDashboard() {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={async () => {
-                  await resetCompanyType()
-                  setCompanyTypeState(null)
-                }}
+                onClick={handleResetCompanyType}
                 className="text-blue-600 hover:text-blue-800"
               >
                 ← Volver a Selección de Tipo de Empresa
@@ -270,10 +432,18 @@ export function FinancialDashboard() {
                 {getStatusIcon(status)}
                 <div>
                   <p className="font-medium">{docType}</p>
-                  {docType === "Financial Statement (3 required)" && companyType === "new" && (
+                  {docType === "Informe Profesional" && maximoEndeudamiento !== null && (
                     <p className="text-sm text-muted-foreground">
-                      {documents.filter((d) => d.documentType === "Financial Statement" && d.isValid).length} de 3
-                      cargados
+                      Tipo esperado: {
+                        maximoEndeudamiento < 900000 ? "Informe de Compilación" :
+                        maximoEndeudamiento < 2400000 ? "Informe de Revisión Limitada" :
+                        "Informe de Auditoría"
+                      }
+                    </p>
+                  )}
+                  {docType === "Balance (3 requeridos)" && companyType === "new" && (
+                    <p className="text-sm text-muted-foreground">
+                      {documents.filter((d) => d.documentType === "Balance" && d.isValid).length} de 3 cargados
                     </p>
                   )}
                   {doc && status === "invalid" && <p className="text-sm text-red-600">{doc.validationMessage}</p>}

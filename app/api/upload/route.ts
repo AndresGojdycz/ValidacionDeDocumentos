@@ -38,6 +38,8 @@ export async function POST(request: NextRequest) {
     // Upload to Vercel Blob
     const blob = await put(filename, file, {
       access: "public",
+      token: process.env.BLOB_READ_WRITE_TOKEN,
+      allowOverwrite: true,
     })
 
     // Return the URL and other metadata

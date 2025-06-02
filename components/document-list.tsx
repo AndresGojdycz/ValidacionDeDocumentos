@@ -28,31 +28,19 @@ type Document = {
   documentYear?: number
 }
 
-export function DocumentList() {
-  const [documents, setDocuments] = useState<Document[]>([])
-  const [loading, setLoading] = useState(true)
+interface DocumentListProps {
+  documents: Document[];
+  isLoading: boolean;
+  onDeleteComplete: () => void;
+}
+
+export function DocumentList({ documents, isLoading, onDeleteComplete }: DocumentListProps) {
   const [selectedDocument, setSelectedDocument] = useState<Document | null>(null)
-
-  useEffect(() => {
-    loadDocuments()
-  }, [])
-
-  const loadDocuments = async () => {
-    setLoading(true)
-    try {
-      const docs = await getDocuments()
-      setDocuments(docs)
-    } catch (error) {
-      console.error("Failed to load documents:", error)
-    } finally {
-      setLoading(false)
-    }
-  }
 
   const handleDelete = async (id: string) => {
     try {
       await deleteDocument(id)
-      setDocuments(documents.filter((doc) => doc.id !== id))
+      onDeleteComplete();
     } catch (error) {
       console.error("Failed to delete document:", error)
     }
@@ -69,7 +57,7 @@ export function DocumentList() {
         <CardDescription>Ver y gestionar sus documentos cargados</CardDescription>
       </CardHeader>
       <CardContent>
-        {loading ? (
+        {isLoading ? (
           <div className="text-center py-10">
             <p className="text-muted-foreground">Cargando documentos...</p>
           </div>

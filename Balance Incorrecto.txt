@@ -1,0 +1,7 @@
+Este es el balance de la empresa PowerPoint con el rut: 21347148237443
+activos: 3600
+pasivos:1500
+ingresos: 10
+gastos: 4
+patrimonio: 2000
+Este balance es al 30/06/2023

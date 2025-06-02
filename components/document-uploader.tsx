@@ -9,7 +9,11 @@ import { FileIcon, UploadCloudIcon, CheckCircleIcon, AlertCircleIcon } from "luc
 import { Progress } from "@/components/ui/progress"
 import { validateDocument } from "@/app/actions"
 
-export function DocumentUploader() {
+interface DocumentUploaderProps {
+  onUploadComplete: () => void;
+}
+
+export function DocumentUploader({ onUploadComplete }: DocumentUploaderProps) {
   const [isDragging, setIsDragging] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
@@ -107,9 +111,13 @@ export function DocumentUploader() {
 
       if (result.success && result.isValid) {
         setValidationStatus("valid")
+        onUploadComplete()
       } else {
         setValidationStatus("invalid")
         setErrorMessage(result.message || "Document validation failed")
+        if (result.success) {
+          onUploadComplete()
+        }
       }
     } catch (error) {
       console.error("Upload error:", error)

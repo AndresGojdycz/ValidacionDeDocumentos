@@ -1,0 +1,7 @@
+Este es el balance de la empresa Power con el rut: 2134714824609
+activos: 20000
+pasivos:19900
+ingresos: 99900
+gastos: 60
+patrimonio: 100
+Este balance es al 30/06/2024
