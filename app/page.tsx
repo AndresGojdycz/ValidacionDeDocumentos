@@ -1,13 +1,13 @@
 "use client"; // This page now needs to be a client component to manage state
-
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Image from "next/image"; // Import NextImage
 import { DocumentUploader } from "@/components/document-uploader"
 import { DocumentList } from "@/components/document-list"
 import { FinancialDashboard } from "@/components/financial-dashboard"
 import GoogleDriveBrowser from "@/components/GoogleDriveBrowser"; // Corrected import
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { getDocuments, getCompanyType, getMaximoEndeudamiento, setCompanyType as setServerCompanyType, setMaximoEndeudamiento as setServerMaximoEndeudamiento } from "@/app/actions"; // Assuming these are still needed here or in children
+import { getDocuments, getCompanyType, getMaximoEndeudamiento, getPlazoMaximoDeudaAnos, setCompanyType as setServerCompanyType, setMaximoEndeudamiento as setServerMaximoEndeudamiento } from "@/app/actions"; // Assuming these are still needed here or in children
+import { Loader2 } from "lucide-react"; // For more subtle loading if needed
 
 // Define DocumentType if it's not already globally available or imported
 // This should match the type definition used in your components/actions
@@ -28,60 +28,58 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(true);
   const [currentCompanyType, setCurrentCompanyType] = useState<"regular" | "agricultural" | "new" | null>(null);
   const [currentMaximoEndeudamiento, setCurrentMaximoEndeudamiento] = useState<number | null>(null);
+  const [currentPlazoDeudaAnos, setCurrentPlazoDeudaAnos] = useState<number | null>(null);
 
-  const fetchAppConfig = async () => {
+  const fetchAllData = useCallback(async (showLoader = true) => {
+    if (showLoader) setIsLoading(true);
     try {
-      const [type, endeuda] = await Promise.all([
+      const [docs, companyType, maxEndeudamiento, plazoDeuda] = await Promise.all([
+        getDocuments(),
         getCompanyType(),
-        getMaximoEndeudamiento()
+        getMaximoEndeudamiento(),
+        getPlazoMaximoDeudaAnos()
       ]);
-      setCurrentCompanyType(type);
-      setCurrentMaximoEndeudamiento(endeuda);
-    } catch (error) {
-      console.error("Error fetching app config in Page:", error);
-    }
-  };
-
-  const fetchDocumentsAndConfig = async () => {
-    setIsLoading(true);
-    try {
-      await Promise.all([
-        fetchDocuments(),
-        fetchAppConfig()
-      ]);
-    } catch (error) {
-      console.error("Error fetching documents and config:", error);
-      // Handle error appropriately
-    } finally {
-      setIsLoading(false);
-    }
-  };
-  
-  const fetchDocuments = async () => { // Modified to be standalone
-    try {
-      const docs = await getDocuments();
       setDocuments(docs);
+      setCurrentCompanyType(companyType);
+      setCurrentMaximoEndeudamiento(maxEndeudamiento);
+      setCurrentPlazoDeudaAnos(plazoDeuda);
+      console.log("[Page] fetchAllData complete:", { companyType, maxEndeudamiento, plazoDeuda });
     } catch (error) {
-      console.error("Error fetching documents:", error);
-      // Handle error appropriately
+      console.error("Error fetching data for page:", error);
+    } finally {
+      if (showLoader) setIsLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchDocumentsAndConfig();
   }, []);
 
-  const handleUploadComplete = () => {
-    // This function will be called by DocumentUploader AND GoogleDriveBrowser
-    // It re-fetches all documents and also app config.
-    fetchDocumentsAndConfig();
-  };
+  useEffect(() => {
+    fetchAllData(true); // Show loader on initial full load
+  }, [fetchAllData]);
+
+  const handleUploadComplete = useCallback(() => {
+    fetchAllData(false); // Re-fetch data, but maybe don't show full page loader if not desired
+  }, [fetchAllData]);
   
-  const handleDashboardChanges = () => {
-    // This function will be called by FinancialDashboard when type or endeudamiento changes
-    // It re-fetches all documents and also app config.
-    fetchDocumentsAndConfig();
-  }
+  // New specific handlers
+  const handleActualCompanyTypeChange = useCallback((newType: "regular" | "agricultural" | "new" | null) => {
+    console.log("[Page] Actual company type changed to:", newType);
+    // Server state for company type is already set by FinancialDashboard
+    // We update local state and then fetch all data because requirements change
+    setCurrentCompanyType(newType);
+    fetchAllData(true); // Full refresh with loader as requirements change
+  }, [fetchAllData]);
+
+  const handleMaxEndeudamientoUpdated = useCallback((newAmount: number | null) => {
+    console.log("[Page] Max endeudamiento updated to:", newAmount);
+    setCurrentMaximoEndeudamiento(newAmount);
+    // No full fetchAllData here to prevent blink
+    // DocumentUploader and GoogleDriveBrowser will get updated prop
+  }, []);
+
+  const handlePlazoDeudaAnosUpdated = useCallback((newPlazo: number | null) => {
+    console.log("[Page] Plazo deuda anos updated to:", newPlazo);
+    setCurrentPlazoDeudaAnos(newPlazo);
+    // No full fetchAllData here
+  }, []);
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900">
@@ -98,6 +96,13 @@ export default function Home() {
 
       {/* Main Content Area */}
       <main className="container mx-auto py-10 space-y-10">
+        {isLoading && !documents.length && (
+            <div className="fixed inset-0 bg-slate-100 bg-opacity-75 flex flex-col items-center justify-center z-50">
+                <Loader2 className="h-16 w-16 animate-spin text-brou-blue mx-auto mb-6" />
+                <h1 className="text-2xl font-semibold mb-2 text-brou-blue">Cargando Datos...</h1>
+                <p className="text-lg text-slate-700">Un momento por favor.</p>
+            </div>
+        )}
         <div className="text-center space-y-2 mb-10">
           {/* Subtitle can remain or be styled differently if needed */}
           <p className="text-slate-600">
@@ -111,8 +116,13 @@ export default function Home() {
           <CardContent className="p-6">
             <FinancialDashboard 
               documents={documents} 
-              isLoadingDocuments={isLoading} 
-              onCompanyTypeChange={handleDashboardChanges} // Modified to a more generic name
+              isLoadingDocuments={isLoading} // This prop might need re-evaluation or be used for internal loaders in FD
+              initialCompanyType={currentCompanyType}
+              initialMaximoEndeudamiento={currentMaximoEndeudamiento}
+              initialPlazoDeudaAnos={currentPlazoDeudaAnos}
+              onActualCompanyTypeChange={handleActualCompanyTypeChange}
+              onMaxEndeudamientoUpdated={handleMaxEndeudamientoUpdated}
+              onPlazoDeudaAnosUpdated={handlePlazoDeudaAnosUpdated}
             />
           </CardContent>
         </Card>
@@ -121,7 +131,10 @@ export default function Home() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {/* Document Uploader - wrapped in a Card */}
           <Card className="bg-brou-white shadow-lg">
-            <DocumentUploader onUploadComplete={handleUploadComplete} />
+            <DocumentUploader 
+              onUploadComplete={handleUploadComplete}
+              disabled={isLoading}
+            />
           </Card>
 
           {/* Google Drive Browser - wrapped in a Card */}
@@ -134,6 +147,8 @@ export default function Home() {
                 onUploadComplete={handleUploadComplete}
                 companyType={currentCompanyType}
                 maximoEndeudamiento={currentMaximoEndeudamiento}
+                plazoDeudaAnos={currentPlazoDeudaAnos}
+                disabled={isLoading}
               />
             </CardContent>
           </Card>
@@ -220,10 +235,11 @@ export default function Home() {
         {/* Document List - wrapped in a Card */}
         <Card className="bg-brou-white shadow-lg">
           <CardContent className="p-6">
-            <DocumentList documents={documents} isLoading={isLoading} onDeleteComplete={fetchDocuments} />
+            <DocumentList documents={documents} isLoading={isLoading} onDeleteComplete={fetchAllData} />
           </CardContent>
         </Card>
       </main>
     </div>
   )
 }
+

@@ -7,7 +7,7 @@ import { CheckCircleIcon, XCircleIcon, AlertCircleIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { getDocuments, getCompanyType, setCompanyType, resetCompanyType, setMaximoEndeudamiento, getMaximoEndeudamiento } from "@/app/actions"
+import { getCompanyType, setCompanyType, resetCompanyType, setMaximoEndeudamiento, getPlazoMaximoDeudaAnos, setPlazoMaximoDeudaAnos } from "@/app/actions"
 import {
   Dialog,
   DialogContent,
@@ -32,58 +32,94 @@ type Document = {
 interface FinancialDashboardProps {
   documents: Document[];
   isLoadingDocuments: boolean;
-  onCompanyTypeChange: () => void; // Callback to refresh docs if needed after type change
+  initialCompanyType: "regular" | "agricultural" | "new" | null;
+  initialMaximoEndeudamiento: number | null;
+  initialPlazoDeudaAnos: number | null;
+  onActualCompanyTypeChange: (newType: "regular" | "agricultural" | "new" | null) => void;
+  onMaxEndeudamientoUpdated: (newAmount: number | null) => void;
+  onPlazoDeudaAnosUpdated: (newPlazo: number | null) => void;
 }
 
-export function FinancialDashboard({ documents, isLoadingDocuments, onCompanyTypeChange }: FinancialDashboardProps) {
+export function FinancialDashboard({ 
+  documents, 
+  isLoadingDocuments, 
+  initialCompanyType,
+  initialMaximoEndeudamiento,
+  initialPlazoDeudaAnos,
+  onActualCompanyTypeChange,
+  onMaxEndeudamientoUpdated,
+  onPlazoDeudaAnosUpdated,
+}: FinancialDashboardProps) {
   const [loadingAppConfig, setLoadingAppConfig] = useState(true);
-  const [companyType, setCompanyTypeState] = useState<"regular" | "agricultural" | "new" | null>(null)
+  const [companyType, setCompanyTypeState] = useState<"regular" | "agricultural" | "new" | null>(initialCompanyType)
   const [showChangeDialog, setShowChangeDialog] = useState(false)
   const [pendingCompanyType, setPendingCompanyType] = useState<"regular" | "agricultural" | "new" | null>(null)
-  const [maximoEndeudamiento, setMaximoEndeudamientoState] = useState<number | null>(null)
-  const [endeudamientoInput, setEndeudamientoInput] = useState<string>("")
+  
+  const [maximoEndeudamientoState, setMaximoEndeudamientoState] = useState<number | null>(initialMaximoEndeudamiento)
+  const [endeudamientoInput, setEndeudamientoInput] = useState<string>(initialMaximoEndeudamiento !== null ? initialMaximoEndeudamiento.toString() : "")
   const LOCAL_STORAGE_KEY_MAX_ENDEUDAMIENTO = "maximoEndeudamientoPersistent";
+  
+  const [plazoDeudaAnosState, setPlazoDeudaAnosState] = useState<number | null>(initialPlazoDeudaAnos);
+  const [plazoDeudaAnosInput, setPlazoDeudaAnosInput] = useState<string>(initialPlazoDeudaAnos !== null ? initialPlazoDeudaAnos.toString() : "");
+  const LOCAL_STORAGE_KEY_PLAZO_DEUDA_ANOS = "plazoDeudaAnosPersistent";
 
   useEffect(() => {
-    // Load initial config from server and then try to override with localStorage if present
-    const loadInitialConfig = async () => {
+    // Sync with initial props
+    setCompanyTypeState(initialCompanyType);
+    setMaximoEndeudamientoState(initialMaximoEndeudamiento);
+    setEndeudamientoInput(initialMaximoEndeudamiento !== null ? initialMaximoEndeudamiento.toString() : "");
+    setPlazoDeudaAnosState(initialPlazoDeudaAnos);
+    setPlazoDeudaAnosInput(initialPlazoDeudaAnos !== null ? initialPlazoDeudaAnos.toString() : "");
+  }, [initialCompanyType, initialMaximoEndeudamiento, initialPlazoDeudaAnos]);
+
+
+  useEffect(() => {
+    // This effect now focuses on syncing localStorage with the server and parent if different from initial props
+    const syncLocalStorage = async () => {
       setLoadingAppConfig(true);
       try {
-        const [serverCompanyType, serverMaxEndeudamiento] = await Promise.all([
-          getCompanyType(),
-          getMaximoEndeudamiento(),
-        ]);
-        
-        setCompanyTypeState(serverCompanyType);
-
-        // Check localStorage for persisted maximoEndeudamiento
+        // Sync Maximo Endeudamiento
         const persistedMaxEndeudamientoString = localStorage.getItem(LOCAL_STORAGE_KEY_MAX_ENDEUDAMIENTO);
-        let effectiveMaxEndeudamiento = serverMaxEndeudamiento;
-
         if (persistedMaxEndeudamientoString !== null) {
           const persistedAmount = parseFloat(persistedMaxEndeudamientoString);
-          if (!isNaN(persistedAmount) && persistedAmount >=0) {
-            effectiveMaxEndeudamiento = persistedAmount;
-            // If localStorage value is different from server, update server
-            if (persistedAmount !== serverMaxEndeudamiento) {
-              console.log(`Syncing localStorage Maximo Endeudamiento (${persistedAmount}) to server.`);
-              await setMaximoEndeudamiento(persistedAmount);
-            }
+          if (!isNaN(persistedAmount) && persistedAmount >= 0 && persistedAmount !== initialMaximoEndeudamiento) {
+            console.log(`Syncing localStorage Maximo Endeudamiento (${persistedAmount}) to server and parent.`);
+            const serverResult = await setMaximoEndeudamiento(persistedAmount);
+            setMaximoEndeudamientoState(serverResult.currentAmount);
+            setEndeudamientoInput(serverResult.currentAmount !== null ? serverResult.currentAmount.toString() : "");
+            if(serverResult.success) onMaxEndeudamientoUpdated(serverResult.currentAmount);
+          } else if (persistedAmount === initialMaximoEndeudamiento) {
+            // If localStorage is same as initial (already synced by parent), just ensure local state matches
+            setMaximoEndeudamientoState(persistedAmount);
+            setEndeudamientoInput(persistedAmount.toString());
           }
         }
-        
-        setMaximoEndeudamientoState(effectiveMaxEndeudamiento);
-        setEndeudamientoInput(effectiveMaxEndeudamiento !== null ? effectiveMaxEndeudamiento.toString() : "");
 
+        // Sync Plazo Deuda Anos
+        const persistedPlazoDeudaAnosString = localStorage.getItem(LOCAL_STORAGE_KEY_PLAZO_DEUDA_ANOS);
+        if (persistedPlazoDeudaAnosString !== null) {
+          const persistedNum = parseInt(persistedPlazoDeudaAnosString, 10);
+          if (!isNaN(persistedNum) && persistedNum >= 0 && persistedNum !== initialPlazoDeudaAnos) {
+            console.log(`Syncing localStorage Plazo Deuda Anos (${persistedNum}) to server and parent.`);
+            const serverResult = await setPlazoMaximoDeudaAnos(persistedNum);
+            setPlazoDeudaAnosState(serverResult.currentPlazoAnos);
+            setPlazoDeudaAnosInput(serverResult.currentPlazoAnos !== null ? serverResult.currentPlazoAnos.toString() : "");
+            if(serverResult.success) onPlazoDeudaAnosUpdated(serverResult.currentPlazoAnos);
+          } else if (persistedNum === initialPlazoDeudaAnos) {
+             setPlazoDeudaAnosState(persistedNum);
+             setPlazoDeudaAnosInput(persistedNum.toString());
+          }
+        }
       } catch (error) {
-        console.error("Failed to load app config (company type/endeudamiento):", error);
+        console.error("Error syncing localStorage with server/parent:", error);
       } finally {
         setLoadingAppConfig(false);
       }
     };
 
-    loadInitialConfig();
-  }, [])
+    syncLocalStorage();
+  // Run this effect when initial props change, to re-evaluate localStorage sync
+  }, [initialMaximoEndeudamiento, initialPlazoDeudaAnos, onMaxEndeudamientoUpdated, onPlazoDeudaAnosUpdated]);
 
   const getRequiredDocuments = () => {
     const baseDocuments = ["Flujo de Fondos", "Balance", "Informe Profesional"]
@@ -149,29 +185,9 @@ export function FinancialDashboard({ documents, isLoadingDocuments, onCompanyTyp
       await setCompanyType(newType)
       setCompanyTypeState(newType)
       
-      // Preserve Maximo Endeudamiento from localStorage if it exists
-      const persistedMaxEndeudamientoString = localStorage.getItem(LOCAL_STORAGE_KEY_MAX_ENDEUDAMIENTO);
-      if (persistedMaxEndeudamientoString !== null) {
-        const persistedAmount = parseFloat(persistedMaxEndeudamientoString);
-        if (!isNaN(persistedAmount) && persistedAmount >= 0) {
-          setMaximoEndeudamientoState(persistedAmount);
-          setEndeudamientoInput(persistedAmount.toString());
-          // Ensure server is also updated with this persisted value, though it should be if it was set correctly before
-          await setMaximoEndeudamiento(persistedAmount); 
-        } else {
-          // Invalid value in localStorage, clear it and reset states
-          localStorage.removeItem(LOCAL_STORAGE_KEY_MAX_ENDEUDAMIENTO);
-          setMaximoEndeudamientoState(null)
-          setEndeudamientoInput("")
-          await setMaximoEndeudamiento(null); // also clear on server
-        }
-      } else {
-        // No persisted value, so reset (this was the old behavior)
-        setMaximoEndeudamientoState(null)
-        setEndeudamientoInput("")
-        // No need to call setMaximoEndeudamiento(null) here as server state for it is not tied to company type directly
-      }
-      onCompanyTypeChange() // This will trigger document list refresh
+      // Maximo Endeudamiento and Plazo are preserved based on localStorage, handled by useEffect.
+      // The parent (`app/page.tsx`) will manage fetching/passing these updated values.
+      onActualCompanyTypeChange(newType) 
     }
   }
 
@@ -179,28 +195,12 @@ export function FinancialDashboard({ documents, isLoadingDocuments, onCompanyTyp
     if (pendingCompanyType) {
       await setCompanyType(pendingCompanyType)
       setCompanyTypeState(pendingCompanyType)
+      const newType = pendingCompanyType;
       setPendingCompanyType(null)
       setShowChangeDialog(false)
 
-      // Preserve Maximo Endeudamiento from localStorage if it exists
-      const persistedMaxEndeudamientoString = localStorage.getItem(LOCAL_STORAGE_KEY_MAX_ENDEUDAMIENTO);
-      if (persistedMaxEndeudamientoString !== null) {
-        const persistedAmount = parseFloat(persistedMaxEndeudamientoString);
-        if (!isNaN(persistedAmount) && persistedAmount >= 0) {
-          setMaximoEndeudamientoState(persistedAmount);
-          setEndeudamientoInput(persistedAmount.toString());
-          await setMaximoEndeudamiento(persistedAmount); // Ensure server reflects this persisted value
-        } else {
-          localStorage.removeItem(LOCAL_STORAGE_KEY_MAX_ENDEUDAMIENTO);
-          setMaximoEndeudamientoState(null)
-          setEndeudamientoInput("")
-          await setMaximoEndeudamiento(null); 
-        }
-      } else {
-        setMaximoEndeudamientoState(null)
-        setEndeudamientoInput("")
-      }
-      onCompanyTypeChange() // This will trigger document list refresh
+      // Maximo Endeudamiento and Plazo are preserved based on localStorage, handled by useEffect.
+      onActualCompanyTypeChange(newType);
     }
   }
 
@@ -208,36 +208,9 @@ export function FinancialDashboard({ documents, isLoadingDocuments, onCompanyTyp
     await resetCompanyType() // Resets company type on the server
     setCompanyTypeState(null)  // Resets local company type state
     
-    // User wants Maximo Endeudamiento to persist even when going back to company type selection.
-    // So, we no longer clear it from localStorage or server here.
-    // The useEffect that loads initial config will ensure it's reapplied from localStorage if present.
-    // If not in localStorage, it will correctly be null/empty as per server state (which should also be null if never set).
-
-    // The input field (endeudamientoInput) and local state (maximoEndeudamientoState)
-    // will be updated by the useEffect hook when it re-runs due to dependency changes
-    // or component re-evaluation after onCompanyTypeChange.
-    // For an immediate reflection if useEffect doesn't run as expected right away, 
-    // we can re-apply from localStorage here too, similar to other handlers.
-    const persistedMaxEndeudamientoString = localStorage.getItem(LOCAL_STORAGE_KEY_MAX_ENDEUDAMIENTO);
-    if (persistedMaxEndeudamientoString !== null) {
-      const persistedAmount = parseFloat(persistedMaxEndeudamientoString);
-      if (!isNaN(persistedAmount) && persistedAmount >= 0) {
-        setMaximoEndeudamientoState(persistedAmount);
-        setEndeudamientoInput(persistedAmount.toString());
-        // No need to call setMaximoEndeudamiento server action here, as it's not being changed by this action.
-        // The server should already have the correct persisted value from previous sets.
-      } else {
-        // Invalid value in localStorage, treat as if not set.
-        setMaximoEndeudamientoState(null);
-        setEndeudamientoInput("");
-      }
-    } else {
-      // No value in localStorage, ensure local state reflects this.
-      setMaximoEndeudamientoState(null);
-      setEndeudamientoInput("");
-    }
-
-    onCompanyTypeChange() // This will trigger document list refresh and potentially other effects.
+    // Maximo Endeudamiento and Plazo persist based on localStorage.
+    // Parent will be notified to refresh.
+    onActualCompanyTypeChange(null);
   }
 
   const getCompanyTypeLabel = (type: string) => {
@@ -255,29 +228,70 @@ export function FinancialDashboard({ documents, isLoadingDocuments, onCompanyTyp
     const amount = parseFloat(endeudamientoInput);
     let success = false;
     let finalAmountForStorage: number | null = null;
+    let serverResponseAmount: number | null = null;
 
     if (!isNaN(amount) && amount >= 0) {
       const result = await setMaximoEndeudamiento(amount);
-      setMaximoEndeudamientoState(result.currentAmount); 
+      serverResponseAmount = result.currentAmount;
       finalAmountForStorage = result.currentAmount;
       success = result.success;
     } else if (endeudamientoInput === "") {
       const result = await setMaximoEndeudamiento(null);
-      setMaximoEndeudamientoState(result.currentAmount); 
+      serverResponseAmount = result.currentAmount; 
       finalAmountForStorage = null;
       success = result.success;
     } else {
       console.error("Invalid endeudamiento input");
-      // Don't save invalid input to localStorage
+      // Optionally provide user feedback here e.g. via toast
+      return; 
     }
 
     if (success) {
+      setMaximoEndeudamientoState(serverResponseAmount); // Update local state with confirmed value
+      setEndeudamientoInput(serverResponseAmount !== null ? serverResponseAmount.toString() : ""); // Sync input field
+
       if (finalAmountForStorage !== null) {
         localStorage.setItem(LOCAL_STORAGE_KEY_MAX_ENDEUDAMIENTO, finalAmountForStorage.toString());
       } else {
         localStorage.removeItem(LOCAL_STORAGE_KEY_MAX_ENDEUDAMIENTO);
       }
-      onCompanyTypeChange(); 
+      onMaxEndeudamientoUpdated(serverResponseAmount); 
+    }
+  };
+
+  // New handler for Plazo Maximo Deuda Anos
+  const handlePlazoDeudaAnosChange = async () => {
+    const anos = parseInt(plazoDeudaAnosInput, 10);
+    let success = false;
+    let finalAnosForStorage: number | null = null;
+    let serverResponseAnos: number | null = null;
+
+    if (!isNaN(anos) && anos >= 0) {
+      const result = await setPlazoMaximoDeudaAnos(anos);
+      serverResponseAnos = result.currentPlazoAnos;
+      finalAnosForStorage = result.currentPlazoAnos;
+      success = result.success;
+    } else if (plazoDeudaAnosInput === "") {
+      const result = await setPlazoMaximoDeudaAnos(null);
+      serverResponseAnos = result.currentPlazoAnos;
+      finalAnosForStorage = null;
+      success = result.success;
+    } else {
+      console.error("Invalid plazoDeudaAnosInput input");
+      // Optionally provide user feedback here
+      return;
+    }
+
+    if (success) {
+      setPlazoDeudaAnosState(serverResponseAnos); // Update local state
+      setPlazoDeudaAnosInput(serverResponseAnos !== null ? serverResponseAnos.toString() : ""); // Sync input
+
+      if (finalAnosForStorage !== null) {
+        localStorage.setItem(LOCAL_STORAGE_KEY_PLAZO_DEUDA_ANOS, finalAnosForStorage.toString());
+      } else {
+        localStorage.removeItem(LOCAL_STORAGE_KEY_PLAZO_DEUDA_ANOS);
+      }
+      onPlazoDeudaAnosUpdated(serverResponseAnos);
     }
   };
 
@@ -300,8 +314,11 @@ export function FinancialDashboard({ documents, isLoadingDocuments, onCompanyTyp
           {isComplete
             ? "Todos los documentos requeridos han sido cargados y validados ✓"
             : `${completedCount} de ${totalRequired} documentos requeridos completados`}
-          {maximoEndeudamiento !== null && 
-            ` (Máximo Endeudamiento: ${maximoEndeudamiento.toLocaleString("es-UY", { style: "currency", currency: "UYU" })})`
+          {maximoEndeudamientoState !== null && 
+            ` (Máximo Endeudamiento: ${maximoEndeudamientoState.toLocaleString("es-UY", { style: "currency", currency: "UYU" })})`
+          }
+          {plazoDeudaAnosState !== null && plazoDeudaAnosState >= 0 &&
+            ` (Plazo Deuda: ${plazoDeudaAnosState} años)`
           }
         </CardDescription>
       </CardHeader>
@@ -321,6 +338,26 @@ export function FinancialDashboard({ documents, isLoadingDocuments, onCompanyTyp
           </div>
           <p className="text-xs text-yellow-700 mt-2">
             Este monto determinará el tipo de informe requerido por el contador.
+          </p>
+        </div>
+
+        {/* New Input for Plazo Maximo Deuda Anos */}
+        <div className="mb-6 p-4 bg-sky-50 border border-sky-200 rounded-lg">
+          <Label htmlFor="plazoDeudaAnosInput" className="font-medium text-sky-900 mb-2 block">Plazo Máximo de Deuda Tomada o a Tomar (Años)</Label>
+          <div className="flex items-center gap-2">
+            <Input 
+              type="number" 
+              id="plazoDeudaAnosInput"
+              placeholder="Ingrese el número de años"
+              value={plazoDeudaAnosInput}
+              onChange={(e) => setPlazoDeudaAnosInput(e.target.value)}
+              min="0"
+              className="flex-grow"
+            />
+            <Button onClick={handlePlazoDeudaAnosChange} size="sm" className="bg-sky-600 hover:bg-sky-700">Establecer Plazo</Button>
+          </div>
+          <p className="text-xs text-sky-700 mt-2">
+            El Flujo de Fondos proyectado deberá cubrir hasta el año actual más este plazo.
           </p>
         </div>
 
@@ -432,11 +469,11 @@ export function FinancialDashboard({ documents, isLoadingDocuments, onCompanyTyp
                 {getStatusIcon(status)}
                 <div>
                   <p className="font-medium">{docType}</p>
-                  {docType === "Informe Profesional" && maximoEndeudamiento !== null && (
+                  {docType === "Informe Profesional" && maximoEndeudamientoState !== null && (
                     <p className="text-sm text-muted-foreground">
                       Tipo esperado: {
-                        maximoEndeudamiento < 900000 ? "Informe de Compilación" :
-                        maximoEndeudamiento < 2400000 ? "Informe de Revisión Limitada" :
+                        maximoEndeudamientoState < 900000 ? "Informe de Compilación" :
+                        maximoEndeudamientoState < 2400000 ? "Informe de Revisión Limitada" :
                         "Informe de Auditoría"
                       }
                     </p>

@@ -27,9 +27,11 @@ interface GoogleDriveBrowserProps {
   onUploadComplete: () => void;
   companyType: "regular" | "agricultural" | "new" | null;
   maximoEndeudamiento: number | null;
+  plazoDeudaAnos: number | null;
+  disabled?: boolean;
 }
 
-export default function GoogleDriveBrowser({ onUploadComplete, companyType, maximoEndeudamiento }: GoogleDriveBrowserProps) {
+export default function GoogleDriveBrowser({ onUploadComplete, companyType, maximoEndeudamiento, plazoDeudaAnos, disabled }: GoogleDriveBrowserProps) {
   const { data: session, status } = useSession();
   const [folders, setFolders] = useState<DriveFolder[]>([]);
   const [files, setFiles] = useState<DriveFile[]>([]);
@@ -119,7 +121,9 @@ export default function GoogleDriveBrowser({ onUploadComplete, companyType, maxi
     // These are passed as props now, but the server actions will read them from server-side state
     // which should have been set by the FinancialDashboard component prior to this.
     // We include them here to emphasize dependency, but the actual server actions pick them up from server-side state.
-    console.log("Processing with company type:", companyType, "and maximo endeudamiento:", maximoEndeudamiento);
+    console.log("Processing with company type:", companyType, 
+                "and maximo endeudamiento:", maximoEndeudamiento,
+                "and plazo deuda anos:", plazoDeudaAnos);
 
     try {
       const contentResult = await getGoogleDriveFileContent(file.id);
@@ -153,7 +157,8 @@ export default function GoogleDriveBrowser({ onUploadComplete, companyType, maxi
       const blob = await uploadResponse.json();
 
       // Now call the actual validateDocument server action
-      const validationResponse = await validateDocument(blob.url, driveFile.name);
+      console.log("[GoogleDriveBrowser] Plazo a usar para validación (prop):", plazoDeudaAnos);
+      const validationResponse = await validateDocument(blob.url, driveFile.name, plazoDeudaAnos);
 
       setValidationResult(validationResponse);
 
@@ -189,7 +194,11 @@ export default function GoogleDriveBrowser({ onUploadComplete, companyType, maxi
         </CardHeader>
         <CardContent className="text-center">
           <p className="mb-4">Por favor, ingrese con Google para explorar sus archivos de Drive.</p>
-          <Button onClick={() => signIn("google")} className="bg-brou-blue hover:bg-brou-blue/90 text-brou-white">
+          <Button 
+            onClick={() => signIn("google")} 
+            className="bg-brou-blue hover:bg-brou-blue/90 text-brou-white"
+            disabled={disabled}
+          >
             Ingresar con Google
           </Button>
         </CardContent>
@@ -202,7 +211,13 @@ export default function GoogleDriveBrowser({ onUploadComplete, companyType, maxi
       <CardHeader>
         <div className="flex justify-between items-center">
             <CardTitle className="text-brou-blue">Explorador de Google Drive</CardTitle>
-            <Button variant="outline" size="icon" onClick={() => loadFoldersAndFiles(currentFolderId)} disabled={isLoading || !session} title="Refrescar">
+            <Button 
+              variant="outline" 
+              size="icon" 
+              onClick={() => loadFoldersAndFiles(currentFolderId)} 
+              disabled={isLoading || !session || disabled}
+              title="Refrescar"
+            >
                 <RefreshCwIcon className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
             </Button>
         </div>
@@ -211,7 +226,7 @@ export default function GoogleDriveBrowser({ onUploadComplete, companyType, maxi
             <div key={p.id} className="flex items-center">
               <button 
                 onClick={() => handleBreadcrumbClick(index)} 
-                disabled={isLoading}
+                disabled={isLoading || disabled}
                 className={`hover:underline disabled:opacity-50 ${index === currentPath.length -1 ? 'font-semibold text-brou-blue' : 'text-slate-700'}`}
               >
                 {p.name}
@@ -240,25 +255,29 @@ export default function GoogleDriveBrowser({ onUploadComplete, companyType, maxi
             {folders.map((folder) => (
               <div 
                 key={folder.id} 
-                onClick={() => !isLoading && handleFolderClick(folder)}
-                className={`flex items-center gap-3 p-2 rounded-md border ${isLoading ? 'opacity-50 cursor-not-allowed' : 'hover:bg-slate-100 cursor-pointer hover:border-slate-300'}`}
+                onClick={() => !isLoading && !disabled && handleFolderClick(folder)}
+                className={`flex items-center gap-3 p-2 rounded-md border ${isLoading || disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-slate-100 cursor-pointer hover:border-slate-300'}`}
               >
                 <FolderIcon className="h-5 w-5 text-brou-yellow shrink-0" />
                 <span className="truncate">{folder.name}</span>
               </div>
             ))}
             {files.map((file) => (
-              <div key={file.id} className="flex items-center justify-between gap-3 p-2 rounded-md border hover:bg-slate-50">
-                <div className="flex items-center gap-3 overflow-hidden">
-                    <FileTextIcon className="h-5 w-5 text-slate-600 shrink-0" />
-                    <span className="truncate" title={file.name}>{file.name}</span>
+              <div 
+                key={file.id} 
+                className={`flex items-center justify-between gap-3 p-2 rounded-md border ${isLoading || disabled ? 'opacity-50' : 'hover:bg-slate-100'}`}
+              >
+                <div className={`flex items-center gap-3 truncate ${isLoading || disabled ? 'cursor-not-allowed' : ''}`}>
+                  <FileTextIcon className="h-5 w-5 text-brou-blue shrink-0" />
+                  <span className="truncate">{file.name}</span>
                 </div>
                 <Button 
-                    size="sm" 
-                    onClick={() => handleValidateFile(file)} 
-                    disabled={isValidating || isLoading || !file.id || !file.name} 
-                    className="bg-brou-blue hover:bg-brou-blue/90 text-brou-white shrink-0"
-                 >
+                  size="sm" 
+                  variant="outline"
+                  onClick={() => handleValidateFile(file)} 
+                  disabled={isValidating || isLoading || disabled}
+                  className="bg-brou-secondary hover:bg-brou-secondary/90 text-brou-white text-xs h-7 px-2 whitespace-nowrap"
+                >
                   {isValidating ? "Procesando..." : "Procesar"}
                 </Button>
               </div>
@@ -266,14 +285,18 @@ export default function GoogleDriveBrowser({ onUploadComplete, companyType, maxi
           </div>
         )}
         {validationResult && (
-            <Card className="mt-4 bg-slate-50">
-                <CardHeader><CardTitle className="text-sm text-slate-700">Resultado del Procesamiento</CardTitle></CardHeader>
-                <CardContent className="text-xs">
-                    <p><strong>Archivo:</strong> {validationResult.document?.name}</p>
-                    <p><strong>Mensaje:</strong> {validationResult.message}</p>
-                    <p><strong>¿Válido?:</strong> {validationResult.isValid ? "Sí" : "No"}</p>
-                </CardContent>
-            </Card>
+          <div className="mt-4 p-3 rounded-md bg-slate-50 border">
+            <h4 className="font-semibold text-sm mb-1">Resultado de Validación (Drive):</h4>
+            {validationResult.success ? (
+              validationResult.isValid ? (
+                <p className="text-sm text-green-600">✓ {validationResult.message || "Documento válido."}</p>
+              ) : (
+                <p className="text-sm text-red-600">✗ {validationResult.message || "Documento inválido."}</p>
+              )
+            ) : (
+              <p className="text-sm text-red-600">✗ Error: {validationResult.message || "Falló la validación."}</p>
+            )}
+          </div>
         )}
       </CardContent>
     </Card>

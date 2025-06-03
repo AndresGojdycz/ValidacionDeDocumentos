@@ -29,6 +29,7 @@ let documents: {
 
 let selectedCompanyType: "regular" | "agricultural" | "new" | null = null
 let maximoEndeudamiento: number | null = null;
+let plazoMaximoDeudaAnos: number | null = null; // New state for maximum debt term in years
 
 export async function setCompanyType(type: "regular" | "agricultural" | "new") {
   selectedCompanyType = type
@@ -61,21 +62,50 @@ export async function getMaximoEndeudamiento() {
   return maximoEndeudamiento;
 }
 
+// New actions for Plazo Maximo Deuda Anos
+export async function setPlazoMaximoDeudaAnos(anos: number | null) {
+  if (anos !== null && (isNaN(anos) || anos < 0)) {
+    plazoMaximoDeudaAnos = null; // Invalid input, set to null
+  } else {
+    plazoMaximoDeudaAnos = anos;
+  }
+  revalidatePath("/");
+  return { success: true, currentPlazoAnos: plazoMaximoDeudaAnos };
+}
+
+export async function getPlazoMaximoDeudaAnos() {
+  return plazoMaximoDeudaAnos;
+}
+
 // Helper function to extract year from document content
-function extractYearFromContent(content: string, fileName: string): number | null {
+// Modified to be more flexible for projections if needed, or we can create a separate one.
+// For now, let's make a slight adjustment to how it might be used for projections.
+function extractYearFromContent(content: string, fileName: string, isProjection: boolean = false): number | null {
   const currentYear = new Date().getFullYear()
-  const yearPattern = /\b(20\d{2})\b/g
-  const matches = [...content.matchAll(yearPattern), ...fileName.matchAll(yearPattern)]
+  const yearPattern = /\b(20\d{2})\b/g // Looks for 20xx years
+  let matches = [...content.matchAll(yearPattern), ...fileName.matchAll(yearPattern)]
 
   if (matches.length === 0) return null
 
-  // Get the most recent year that's not in the future
-  const years = matches
+  let years = matches
     .map((match) => Number.parseInt(match[1]))
-    .filter((year) => year >= 2020 && year <= currentYear)
-    .sort((a, b) => b - a)
+    .filter((year) => year >= 2000 && year <= currentYear + 20) // Allow years well into the future for projections
+    .sort((a, b) => b - a) // Sort descending (latest year first)
 
-  return years.length > 0 ? years[0] : null
+  if (isProjection) {
+    // For projections, we want the latest future year or current year if no future years found that are relevant.
+    const futureYears = years.filter(year => year >= currentYear);
+    if (futureYears.length > 0) return futureYears[0]; // Return latest future year found
+    // If no future years, but there are current/past years, it might be a historical cash flow or badly described.
+    // Depending on strictness, we might return null or the latest of any year found.
+    // For this validation, if no clear future projection year, it likely fails later comparison.
+    return years.length > 0 ? years[0] : null; 
+  } else {
+    // Original logic for historical/current documents
+    years = years.filter((year) => year >= 2020 && year <= currentYear); 
+    years.sort((a, b) => b - a);
+    return years.length > 0 ? years[0] : null
+  }
 }
 
 // Helper function to check year consistency
@@ -399,7 +429,116 @@ async function getDETAOpinionsFromAI(content: string): Promise<{ cashflowOpinion
   }
 }
 
-export async function validateDocument(url: string, fileName: string) {
+// AI Helper function to analyze Flujo de Fondos projection coverage
+async function getFlujoDeFondosProjectionCoverageAI(content: string): Promise<{
+  anioFinalProyeccion?: number;
+  duracionProyeccionAnios?: number;
+  confianza?: "alta" | "media" | "baja" | "ninguna";
+  explicacionIA?: string;
+}> {
+  if (process.env.OPENAI_API_KEY === undefined) {
+    console.error("OpenAI API key not found. Skipping AI Flujo de Fondos coverage check.");
+    return { confianza: "ninguna", explicacionIA: "OpenAI API key no configurada." };
+  }
+  if (content.trim() === "") {
+    return { confianza: "ninguna", explicacionIA: "Contenido del documento vacío." };
+  }
+
+  const relevantContent = content.substring(0, 3800); // Limit content length
+  const currentYear = new Date().getFullYear();
+
+  const prompt = `
+    Eres un analista financiero experto. Analiza el siguiente texto de un Estado de Flujo de Fondos proyectado.
+    Tu tarea es determinar el alcance temporal de la proyección.
+
+    Texto del Flujo de Fondos:
+    """
+    ${relevantContent}
+    """
+
+    Por favor, responde en formato JSON con los siguientes campos:
+    - "anio_final_proyeccion_explicito": (number | null) El último año NUMÉRICO que se menciona explícitamente como parte del período de proyección (ej: si dice "proyectado hasta 2027", el valor es 2027). Si no se menciona un año final explícito, responde null.
+    - "duracion_total_proyeccion_anios_explicita": (number | null) El número total de años que la proyección declara explícitamente cubrir (ej: si dice "proyección a 5 años" o "para los próximos tres años", el valor es 5 o 3 respectivamente). Si no se menciona una duración explícita, responde null.
+    - "confianza_determinacion": (string) Tu nivel de confianza en esta determinación. Debe ser una de: "alta", "media", "baja", "ninguna".
+    - "explicacion_detalle": (string) Una breve explicación de cómo llegaste a tu conclusión, citando partes relevantes del texto si es posible, o por qué no pudiste determinarlo.
+
+    Consideraciones:
+    - Prioriza un "anio_final_proyeccion_explicito" si está claramente indicado.
+    - Si solo se da una duración (ej: "proyección a 3 años"), y no un año final, usa "duracion_total_proyeccion_anios_explicita".
+    - Si el texto es ambiguo o no contiene información clara sobre el período de proyección, indica confianza "baja" o "ninguna".
+    - El año actual para referencia es ${currentYear}.
+
+    Ejemplo de respuesta si el texto dice "Flujo de fondos proyectado para los años 2024, 2025 y 2026":
+    {
+      "anio_final_proyeccion_explicito": 2026,
+      "duracion_total_proyeccion_anios_explicita": null, 
+      "confianza_determinacion": "alta",
+      "explicacion_detalle": "El texto menciona explícitamente proyecciones para los años 2024, 2025 y 2026, siendo 2026 el último año."
+    }
+
+    Ejemplo si dice "Proyección a 3 años":
+    {
+      "anio_final_proyeccion_explicito": null,
+      "duracion_total_proyeccion_anios_explicita": 3,
+      "confianza_determinacion": "alta",
+      "explicacion_detalle": "El texto indica 'Proyección a 3 años'."
+    }
+    
+    Ejemplo si no está claro:
+    {
+      "anio_final_proyeccion_explicito": null,
+      "duracion_total_proyeccion_anios_explicita": null,
+      "confianza_determinacion": "baja",
+      "explicacion_detalle": "El texto menciona flujos de efectivo pero no especifica un período de proyección claro o un año final."
+    }
+  `;
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: "gpt-3.5-turbo", // Or a more advanced model if needed for accuracy
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.1, // Low temperature for more factual extraction
+      max_tokens: 250,
+      response_format: { type: "json_object" },
+    });
+
+    const rawResponse = completion.choices[0]?.message?.content;
+    console.log("[AI FlujoFondos Coverage Check] Raw response:", rawResponse);
+
+    if (!rawResponse) {
+      return { confianza: "ninguna", explicacionIA: "La IA retornó una respuesta vacía." };
+    }
+
+    let parsedResponse;
+    try {
+      parsedResponse = JSON.parse(rawResponse);
+    } catch (jsonError) {
+      console.error("[AI FlujoFondos Coverage Check] Error parsing JSON:", jsonError, "Raw:", rawResponse);
+      return { confianza: "ninguna", explicacionIA: "La IA retornó un JSON inválido. " + rawResponse };
+    }
+
+    const { 
+      anio_final_proyeccion_explicito,
+      duracion_total_proyeccion_anios_explicita,
+      confianza_determinacion,
+      explicacion_detalle
+    } = parsedResponse;
+
+    return {
+      anioFinalProyeccion: typeof anio_final_proyeccion_explicito === 'number' ? anio_final_proyeccion_explicito : undefined,
+      duracionProyeccionAnios: typeof duracion_total_proyeccion_anios_explicita === 'number' ? duracion_total_proyeccion_anios_explicita : undefined,
+      confianza: ["alta", "media", "baja", "ninguna"].includes(confianza_determinacion) ? confianza_determinacion : "baja",
+      explicacionIA: explicacion_detalle || "No se proporcionó explicación."
+    };
+
+  } catch (error: any) {
+    console.error("Error llamando a OpenAI para FlujoFondos coverage check:", error);
+    return { confianza: "ninguna", explicacionIA: `Error conectando con OpenAI: ${error.message}` };
+  }
+}
+
+export async function validateDocument(url: string, fileName: string, currentPlazoDeudaForValidation: number | null) {
+  console.log(`[validateDocument] Called with: fileName='${fileName}', plazo='${currentPlazoDeudaForValidation}'`);
   try {
     // Fetch the document content with retry logic
     let response: Response | null = null;
@@ -482,8 +621,9 @@ export async function validateDocument(url: string, fileName: string) {
       content = fileName.toLowerCase()
     }
 
-    // Extract year from content
-    documentYear = extractYearFromContent(content, fileName)
+    // Extract year from content - adapt for projections when type is known
+    // Initial extraction, will be re-evaluated for Flujo de Fondos
+    documentYear = extractYearFromContent(content, fileName, true)
 
     // Enhanced validation for financial documents and company-specific documents
     const flujoDeFondosKeywords = [
@@ -662,6 +802,8 @@ export async function validateDocument(url: string, fileName: string) {
       }
     } else if (flujoDeFondosKeywords.some((keyword) => contentLower.includes(keyword) || fileNameLower.includes("flujo de fondos"))) {
       documentType = "Flujo de Fondos"
+      // Re-extract year specifically for projections if it's a Flujo de Fondos
+      documentYear = extractYearFromContent(content, fileName, true)
 
       // Specific validation for cashflow documents
       const requiredCashflowElements = ["operativas", "inversion", "financiacion", "efectivo"]
@@ -674,8 +816,44 @@ export async function validateDocument(url: string, fileName: string) {
         isValid = false
         validationMessage = "El documento de Flujo de Fondos parece estar incompleto. Proporcione un estado de flujo de fondos proyectado detallado."
       }
+
+      // New AI-driven Validation: Check if Flujo de Fondos covers the currentPlazoDeudaForValidation
+      if (isValid && currentPlazoDeudaForValidation !== null && currentPlazoDeudaForValidation > 0) {
+        console.log(`[validateDocument] Flujo de Fondos - AI Plazo check initiated. currentPlazo=${currentPlazoDeudaForValidation}`);
+        const aiCoverageResult = await getFlujoDeFondosProjectionCoverageAI(content);
+        console.log("[validateDocument] Flujo de Fondos - AI Coverage Result:", aiCoverageResult);
+
+        let anioCoberturaSegunIA: number | undefined = undefined;
+        if (aiCoverageResult.anioFinalProyeccion) {
+          anioCoberturaSegunIA = aiCoverageResult.anioFinalProyeccion;
+        } else if (aiCoverageResult.duracionProyeccionAnios) {
+          anioCoberturaSegunIA = new Date().getFullYear() + aiCoverageResult.duracionProyeccionAnios;
+        }
+
+        if (!anioCoberturaSegunIA || !aiCoverageResult.confianza || ["baja", "ninguna"].includes(aiCoverageResult.confianza)) {
+          isValid = false;
+          validationMessage = (validationMessage ? validationMessage + " ADEMÁS, " : "") +
+            `IA no pudo determinar con certeza el período de cobertura del Flujo de Fondos. (Confianza: ${aiCoverageResult.confianza || 'ninguna'}). ${aiCoverageResult.explicacionIA || ''}`;
+        } else {
+          const currentSystemYear = new Date().getFullYear(); // Or an effective start year if AI determines one
+          const requiredCoverageYear = currentSystemYear + currentPlazoDeudaForValidation;
+          if (anioCoberturaSegunIA < requiredCoverageYear) {
+            isValid = false;
+            validationMessage = (validationMessage ? validationMessage + " ADEMÁS, " : "") +
+              `El Flujo de Fondos (cobertura según IA: ${anioCoberturaSegunIA}) no cubre el plazo de la deuda requerido (hasta ${requiredCoverageYear} para ${currentPlazoDeudaForValidation} años). ${aiCoverageResult.explicacionIA || ''}`;
+          } else {
+            validationMessage = (validationMessage ? validationMessage + " ADEMÁS, " : "") + 
+            `Revisión IA: El Flujo de Fondos parece cubrir el plazo de la deuda (Cobertura IA hasta ${anioCoberturaSegunIA}, Plazo deuda ${currentPlazoDeudaForValidation} años). ${aiCoverageResult.explicacionIA || ''}`;
+          }
+        }
+      } else if (isValid && (currentPlazoDeudaForValidation === null || currentPlazoDeudaForValidation <= 0)){
+         // If plazo is not set, mention that this specific check was skipped.
+         validationMessage = (validationMessage ? validationMessage + " ADEMÁS, " : "") + "Revisión de cobertura de plazo de deuda no aplica (plazo no establecido)."
+      }
     } else if (balanceKeywords.some((keyword) => contentLower.includes(keyword) || fileNameLower.includes("balance") || fileNameLower.includes("financial statement"))) {
       documentType = "Balance"
+      // For Balance, use non-projection year extraction
+      documentYear = extractYearFromContent(content, fileName, false) 
 
       // Standard keyword-based structural checks (kept as a first pass)
       const requiredFinancialElements = ["activos", "pasivos", "ingresos", "patrimonio"]

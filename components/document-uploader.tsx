@@ -7,13 +7,14 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { FileIcon, UploadCloudIcon, CheckCircleIcon, AlertCircleIcon } from "lucide-react"
 import { Progress } from "@/components/ui/progress"
-import { validateDocument } from "@/app/actions"
+import { validateDocument, getPlazoMaximoDeudaAnos } from "@/app/actions"
 
 interface DocumentUploaderProps {
   onUploadComplete: () => void;
+  disabled?: boolean;
 }
 
-export function DocumentUploader({ onUploadComplete }: DocumentUploaderProps) {
+export function DocumentUploader({ onUploadComplete, disabled }: DocumentUploaderProps) {
   const [isDragging, setIsDragging] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
@@ -107,7 +108,9 @@ export function DocumentUploader({ onUploadComplete }: DocumentUploaderProps) {
 
       // Validate the document
       setValidationStatus("validating")
-      const result = await validateDocument(blob.url, file.name)
+      const currentPlazo = await getPlazoMaximoDeudaAnos();
+      console.log("[DocumentUploader] Plazo a usar para validación:", currentPlazo);
+      const result = await validateDocument(blob.url, file.name, currentPlazo)
 
       if (result.success && result.isValid) {
         setValidationStatus("valid")
@@ -148,15 +151,16 @@ export function DocumentUploader({ onUploadComplete }: DocumentUploaderProps) {
           }`}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          onClick={() => fileInputRef.current?.click()}
+          onDrop={!disabled ? handleDrop : undefined}
+          onClick={() => !disabled && fileInputRef.current?.click()}
         >
           <input
             type="file"
             ref={fileInputRef}
-            onChange={handleFileChange}
+            onChange={!disabled ? handleFileChange : undefined}
             className="hidden"
             accept=".pdf,.doc,.docx,.txt,.xls,.xlsx"
+            disabled={disabled || isUploading || validationStatus === "validating"}
           />
           <div className="flex flex-col items-center gap-2">
             <UploadCloudIcon className="h-10 w-10 text-muted-foreground" />
@@ -206,8 +210,8 @@ export function DocumentUploader({ onUploadComplete }: DocumentUploaderProps) {
       </CardContent>
       <CardFooter>
         <Button
-          onClick={() => fileInputRef.current?.click()}
-          disabled={isUploading || validationStatus === "validating"}
+          onClick={() => !disabled && fileInputRef.current?.click()}
+          disabled={disabled || isUploading || validationStatus === "validating"}
           className="w-full"
         >
           Seleccionar Documento
