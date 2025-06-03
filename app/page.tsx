@@ -5,8 +5,9 @@ import Image from "next/image"; // Import NextImage
 import { DocumentUploader } from "@/components/document-uploader"
 import { DocumentList } from "@/components/document-list"
 import { FinancialDashboard } from "@/components/financial-dashboard"
+import GoogleDriveBrowser from "@/components/GoogleDriveBrowser"; // Corrected import
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { getDocuments, getCompanyType, getMaximoEndeudamiento } from "@/app/actions"; // Assuming these are still needed here or in children
+import { getDocuments, getCompanyType, getMaximoEndeudamiento, setCompanyType as setServerCompanyType, setMaximoEndeudamiento as setServerMaximoEndeudamiento } from "@/app/actions"; // Assuming these are still needed here or in children
 
 // Define DocumentType if it's not already globally available or imported
 // This should match the type definition used in your components/actions
@@ -25,33 +26,62 @@ type Document = {
 export default function Home() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  // We can also manage companyType and maxEndeudamiento here if FinancialDashboard will become more of a display component
-  // For now, let's focus on documents
+  const [currentCompanyType, setCurrentCompanyType] = useState<"regular" | "agricultural" | "new" | null>(null);
+  const [currentMaximoEndeudamiento, setCurrentMaximoEndeudamiento] = useState<number | null>(null);
 
-  const fetchDocuments = async () => {
+  const fetchAppConfig = async () => {
     try {
-      // setIsLoading(true); // Optionally show a loading state for refreshes too
-      const docs = await getDocuments();
-      setDocuments(docs);
+      const [type, endeuda] = await Promise.all([
+        getCompanyType(),
+        getMaximoEndeudamiento()
+      ]);
+      setCurrentCompanyType(type);
+      setCurrentMaximoEndeudamiento(endeuda);
     } catch (error) {
-      console.error("Error fetching documents:", error);
+      console.error("Error fetching app config in Page:", error);
+    }
+  };
+
+  const fetchDocumentsAndConfig = async () => {
+    setIsLoading(true);
+    try {
+      await Promise.all([
+        fetchDocuments(),
+        fetchAppConfig()
+      ]);
+    } catch (error) {
+      console.error("Error fetching documents and config:", error);
       // Handle error appropriately
     } finally {
       setIsLoading(false);
     }
   };
+  
+  const fetchDocuments = async () => { // Modified to be standalone
+    try {
+      const docs = await getDocuments();
+      setDocuments(docs);
+    } catch (error) {
+      console.error("Error fetching documents:", error);
+      // Handle error appropriately
+    }
+  };
 
   useEffect(() => {
-    fetchDocuments();
+    fetchDocumentsAndConfig();
   }, []);
 
   const handleUploadComplete = () => {
-    // This function will be called by DocumentUploader
-    // It re-fetches all documents. A more optimized way would be to get the
-    // new/updated document from validateDocument and update the state locally.
-    // But for simplicity and to ensure full consistency for now:
-    fetchDocuments();
+    // This function will be called by DocumentUploader AND GoogleDriveBrowser
+    // It re-fetches all documents and also app config.
+    fetchDocumentsAndConfig();
   };
+  
+  const handleDashboardChanges = () => {
+    // This function will be called by FinancialDashboard when type or endeudamiento changes
+    // It re-fetches all documents and also app config.
+    fetchDocumentsAndConfig();
+  }
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900">
@@ -79,7 +109,11 @@ export default function Home() {
         {/* Dashboard - wrapped in a Card for consistency */}
         <Card className="bg-brou-white shadow-lg">
           <CardContent className="p-6">
-            <FinancialDashboard documents={documents} isLoadingDocuments={isLoading} onCompanyTypeChange={fetchDocuments} />
+            <FinancialDashboard 
+              documents={documents} 
+              isLoadingDocuments={isLoading} 
+              onCompanyTypeChange={handleDashboardChanges} // Modified to a more generic name
+            />
           </CardContent>
         </Card>
         
@@ -90,8 +124,22 @@ export default function Home() {
             <DocumentUploader onUploadComplete={handleUploadComplete} />
           </Card>
 
-          {/* Requirements Section - already a Card, ensure bg is white */}
+          {/* Google Drive Browser - wrapped in a Card */}
           <Card className="bg-brou-white shadow-lg">
+            <CardHeader>
+              <CardTitle className="text-lg text-brou-blue">Procesar desde Google Drive</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <GoogleDriveBrowser 
+                onUploadComplete={handleUploadComplete}
+                companyType={currentCompanyType}
+                maximoEndeudamiento={currentMaximoEndeudamiento}
+              />
+            </CardContent>
+          </Card>
+
+          {/* Requirements Section - already a Card, ensure bg is white */}
+          <Card className="bg-brou-white shadow-lg lg:col-span-2">
             <CardHeader>
               <CardTitle className="text-lg text-brou-blue">Requerimientos</CardTitle>
             </CardHeader>

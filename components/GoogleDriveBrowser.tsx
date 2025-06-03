@@ -6,7 +6,7 @@ import {
   listGoogleDriveFolders,
   listFilesInFolder,
   getGoogleDriveFileContent,
-  // validateDocument, // We'll need to adapt this
+  validateDocument,
 } from "@/app/actions";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,7 +23,13 @@ interface DriveItem {
 interface DriveFolder extends DriveItem {}
 interface DriveFile extends DriveItem {}
 
-export default function GoogleDriveBrowser() {
+interface GoogleDriveBrowserProps {
+  onUploadComplete: () => void;
+  companyType: "regular" | "agricultural" | "new" | null;
+  maximoEndeudamiento: number | null;
+}
+
+export default function GoogleDriveBrowser({ onUploadComplete, companyType, maximoEndeudamiento }: GoogleDriveBrowserProps) {
   const { data: session, status } = useSession();
   const [folders, setFolders] = useState<DriveFolder[]>([]);
   const [files, setFiles] = useState<DriveFile[]>([]);
@@ -109,6 +115,12 @@ export default function GoogleDriveBrowser() {
     setValidationResult(null);
     toast.info(`Procesando archivo desde Drive: ${file.name}...`);
 
+    // Ensure companyType and maximoEndeudamiento are set before proceeding with validation
+    // These are passed as props now, but the server actions will read them from server-side state
+    // which should have been set by the FinancialDashboard component prior to this.
+    // We include them here to emphasize dependency, but the actual server actions pick them up from server-side state.
+    console.log("Processing with company type:", companyType, "and maximo endeudamiento:", maximoEndeudamiento);
+
     try {
       const contentResult = await getGoogleDriveFileContent(file.id);
       if (contentResult.error || !contentResult.content || !contentResult.name) {
@@ -117,31 +129,43 @@ export default function GoogleDriveBrowser() {
         return;
       }
 
-      // Placeholder for calling the adapted validateDocument
-      // This will need to be uncommented and `validateDocument` adapted
       // For now, we just log and set a mock result.
       console.log("Validating from Drive:", { fileName: contentResult.name, contentPreview: contentResult.content.substring(0,100)});
-      // const validationResponse = await validateDocumentFromContent(
-      //   contentResult.content,
-      //   contentResult.name,
-      //   // You'll need to pass companyType and maxEndeudamiento if they are relevant
-      //   // This might require lifting state or passing props
-      // );
       
-      // Simulate an async validation call
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      const mockValidation = {
-        success: true,
-        message: `Simulación: ${contentResult.name} parece válido. (Contenido procesado)`,
-        isValid: Math.random() > 0.5,
-        document: { name: contentResult.name, type: "Balance", year: 2023, validatedAt: new Date().toISOString() }
-      };
-      setValidationResult(mockValidation);
+      // Convert content string to a File object to send to /api/upload
+      const driveFile = new File([contentResult.content], contentResult.name, {
+        type: contentResult.mimeType || "application/octet-stream", // Attempt to use original mimeType or fallback
+      });
 
-      if (mockValidation.success) {
-        toast.success(mockValidation.message);
+      const formData = new FormData();
+      formData.append("file", driveFile);
+
+      const uploadResponse = await fetch(`/api/upload?filename=${encodeURIComponent(driveFile.name)}`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!uploadResponse.ok) {
+        const errorData = await uploadResponse.json();
+        throw new Error(errorData.error || "Upload to server failed from Drive file");
+      }
+
+      const blob = await uploadResponse.json();
+
+      // Now call the actual validateDocument server action
+      const validationResponse = await validateDocument(blob.url, driveFile.name);
+
+      setValidationResult(validationResponse);
+
+      if (validationResponse.success && validationResponse.isValid) {
+        toast.success(validationResponse.message || `Archivo ${driveFile.name} validado correctamente.`);
+        onUploadComplete(); // Call the callback to refresh document lists
       } else {
-        toast.error(mockValidation.message || `Error validando ${contentResult.name}`);
+        toast.error(validationResponse.message || `Error validando ${driveFile.name}`);
+        // Optionally call onUploadComplete even on failure if the list should refresh to show the invalid attempt
+        if (validationResponse.success) { // successful call to validateDocument, but doc is invalid
+            onUploadComplete();
+        }
       }
 
     } catch (e: any) {

@@ -24,12 +24,14 @@ export async function POST(request: NextRequest) {
       "application/msword",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       "text/plain",
+      "application/vnd.ms-excel",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     ]
 
     if (!allowedTypes.includes(file.type)) {
       return NextResponse.json(
         {
-          error: "Invalid file type. Please upload PDF, DOC, DOCX, or TXT files.",
+          error: `Invalid file type (${file.type}). Please upload PDF, DOC, DOCX, TXT, XLS, or XLSX files.`,
         },
         { status: 400 },
       )

@@ -649,7 +649,7 @@ export async function validateDocument(url: string, fileName: string) {
           isValid = false;
           validationMessage = `Revisión IA: Falta la opinión general sobre la solicitud de crédito. ${explanation || ""}`;
         } else { // One or both are "unknown"
-          // Not necessarily invalid, but a warning. Could be made invalid if stricter control is needed.
+          isValid = false;
           validationMessage = `Advertencia IA para DETA: No se pudo determinar con certeza la presencia de una o ambas opiniones (Flujo de caja: ${String(cashflowOpinionPresent)}, Crédito general: ${String(creditOpinionPresent)}). ${explanation || "Verifique el contenido."}`;
           // Consider if isValid should be false here for stricter validation
         }
@@ -975,7 +975,12 @@ export async function listGoogleDriveFolders(parentFolderId?: string) {
 
   } catch (error: any) {
     console.error("Error listing Google Drive folders:", error.message);
-    if (error.response?.data?.error === "invalid_grant" || error.message.includes("token")){
+    const errorMessage = error.message?.toLowerCase() || "";
+    let errorResponseData = null;
+    if (typeof error.response?.data?.error === 'string') {
+      errorResponseData = error.response.data.error.toLowerCase();
+    }
+    if (errorResponseData === "invalid_grant" || errorMessage.includes("token") || errorMessage.includes("invalid credentials") || errorMessage.includes("expired")) {
         return { error: "Error de autenticación con Google Drive. Por favor, intente salir y volver a ingresar.", needsReAuth: true };
     }
     return { error: `Failed to list Google Drive folders: ${error.message}` };
@@ -1001,14 +1006,19 @@ export async function listFilesInFolder(folderId: string) {
     return { files: res.data.files || [] };
   } catch (error: any) {
     console.error("Error listing files in folder:", error.message);
-     if (error.response?.data?.error === "invalid_grant" || error.message.includes("token")){
+    const errorMessage = error.message?.toLowerCase() || "";
+    let errorResponseData = null;
+    if (typeof error.response?.data?.error === 'string') {
+      errorResponseData = error.response.data.error.toLowerCase();
+    }
+    if (errorResponseData === "invalid_grant" || errorMessage.includes("token") || errorMessage.includes("invalid credentials") || errorMessage.includes("expired")) {
         return { error: "Error de autenticación con Google Drive. Por favor, intente salir y volver a ingresar.", needsReAuth: true };
     }
     return { error: `Failed to list files: ${error.message}` };
   }
 }
 
-export async function getGoogleDriveFileContent(fileId: string): Promise<{ content?: string; name?: string; error?: string; needsReAuth?: boolean }> {
+export async function getGoogleDriveFileContent(fileId: string): Promise<{ content?: string; name?: string; mimeType?: string; error?: string; needsReAuth?: boolean }> {
   const session = await getServerSession(authOptions);
   if (!session || !session.accessToken) {
     return { error: "Authentication required." };
@@ -1041,7 +1051,7 @@ export async function getGoogleDriveFileContent(fileId: string): Promise<{ conte
             for await (const chunk of (res.data as any)) {
                 chunks.push(chunk);
             }
-            return { content: Buffer.concat(chunks).toString(), name: fileName };
+            return { content: Buffer.concat(chunks).toString(), name: fileName, mimeType: mimeType || 'text/plain' };
         } else {
             return { error: `Unsupported Google Doc type: ${mimeType}. Only text export from Google Docs is supported.` };
         }
@@ -1057,11 +1067,17 @@ export async function getGoogleDriveFileContent(fileId: string): Promise<{ conte
     // We assume text for now for validation purposes as our AI expects text.
     // A more robust solution would check mimeType here.
     const content = Buffer.from(response.data as ArrayBuffer).toString("utf-8");
-    return { content, name: fileName };
+    return { content, name: fileName, mimeType: mimeType || 'application/octet-stream' };
 
   } catch (error: any) {
     console.error("Error getting Google Drive file content:", error.message, error.response?.data);
-    if (error.response?.data?.error === "invalid_grant" || error.message.includes("token") || error.response?.status === 401 || error.response?.status === 403){
+    const errorMessage = error.message?.toLowerCase() || "";
+    let errorResponseData = null;
+    if (typeof error.response?.data?.error === 'string') {
+      errorResponseData = error.response.data.error.toLowerCase();
+    }
+    const errorStatus = error.response?.status;
+    if (errorResponseData === "invalid_grant" || errorMessage.includes("token") || errorMessage.includes("invalid credentials") || errorMessage.includes("expired") || errorStatus === 401 || errorStatus === 403){
         return { error: "Error de autenticación o permisos con Google Drive. Por favor, intente salir y volver a ingresar.", needsReAuth: true };
     }
     return { error: `Failed to get file content: ${error.message}` };

@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import './globals.css'
 import SessionProviderWrapper from '@/components/SessionProviderWrapper'
+import { Toaster } from '@/components/ui/sonner'
 
 export const metadata: Metadata = {
   title: 'Mesa de Entrada',
@@ -18,6 +19,7 @@ export default function RootLayout({
       <body>
         <SessionProviderWrapper>
           {children}
+          <Toaster />
         </SessionProviderWrapper>
       </body>
     </html>
