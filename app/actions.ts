@@ -14,6 +14,40 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 })
 
+// NEW HELPER FUNCTION (Placeholder - needs actual OpenAI API implementation)
+async function extractTextFromPdfWithOpenAI(pdfBuffer: ArrayBuffer): Promise<string> {
+  console.log("[AI OCR] Attempting to extract text from PDF with OpenAI.");
+  // TODO: Implement the actual OpenAI API call for PDF OCR.
+  // This is highly dependent on the model (e.g., GPT-4o) and the specific API usage.
+  // You might need to:
+  // 1. Convert buffer to a format OpenAI API accepts (e.g., base64 string, or use a specific SDK method).
+  // 2. Call an OpenAI endpoint capable of processing PDFs or images from PDFs.
+  // 3. Parse the response to get the extracted text.
+
+  // Example placeholder logic (REPLACE WITH ACTUAL IMPLEMENTATION):
+  // For demonstration, this placeholder will simulate a successful OCR after a delay
+  // and return a generic message. In a real scenario, it would return extracted text.
+  await new Promise(resolve => setTimeout(resolve, 2000)); // Simulate API call delay
+  
+  // A very basic check: if the PDF buffer is tiny, it's unlikely to be a valid scanned doc.
+  if (pdfBuffer.byteLength < 1024) { // Less than 1KB
+    console.warn("[AI OCR] PDF buffer is very small, OCR might yield poor results or fail.");
+    // return ""; // Or throw an error if preferred
+  }
+
+  // THIS IS A SIMULATION - REPLACE WITH ACTUAL TEXT EXTRACTED BY OPENAI
+  const extractedText = `Simulated OCR text from PDF. Length: ${pdfBuffer.byteLength} bytes. Contains keywords: balance, activos, pasivos. This is a test.`;
+  console.log("[AI OCR] Simulated text extraction complete.");
+  
+  // In a real implementation, if OpenAI fails, you should throw an error or return an empty string
+  // to be handled by the caller.
+  // if (error_from_openai) {
+  //   throw new Error("OpenAI OCR failed: " + error_message);
+  // }
+
+  return extractedText;
+}
+
 // Update the documents array type to include documentType and year
 let documents: {
   id: string
@@ -30,10 +64,123 @@ let documents: {
 let selectedCompanyType: "regular" | "agricultural" | "new" | null = null
 let maximoEndeudamiento: number | null = null;
 let plazoMaximoDeudaAnos: number | null = null; // New state for maximum debt term in years
+let allRequirementsSuccessfullyMet: boolean = false; // NEW: Tracks overall requirement completion
+
+// NEW: Getter for the overall validation status
+export async function getOverallValidationStatus() {
+  return allRequirementsSuccessfullyMet;
+}
+
+// Internal function to check requirements and update the global status flag
+async function checkAndSetOverallValidationStatus() {
+  const currentCompanyType = selectedCompanyType;
+  const currentMaxEndeudamiento = maximoEndeudamiento;
+  const currentDocs = documents;
+
+  if (!currentCompanyType) {
+    if (allRequirementsSuccessfullyMet) {
+      allRequirementsSuccessfullyMet = false;
+      revalidatePath("/");
+    }
+    return; // Cannot determine requirements without company type
+  }
+
+  let requirements: { type: string; count: number; specificValidation?: (doc: any) => boolean; description: string }[] = [];
+
+  // Define base requirements
+  requirements.push({ type: "FlujoDeFondos", count: 1, description: "Flujo de Fondos" });
+  requirements.push({ type: "Balance", count: currentCompanyType === "new" ? 3 : 1, description: currentCompanyType === "new" ? "3 Balances" : "Balance" });
+  
+  let informeDesc = "Informe Profesional";
+  let expectedInformeType = "";
+  if (currentMaxEndeudamiento !== null) {
+    if (currentMaxEndeudamiento < 900000) expectedInformeType = "Compilación";
+    else if (currentMaxEndeudamiento < 2400000) expectedInformeType = "Revisión"; // As per AI output from getInformeProfesionalTypeFromAI
+    else expectedInformeType = "Auditoría";
+    informeDesc += ` (${expectedInformeType} requerido)`
+  } else {
+    informeDesc += " (tipo según endeudamiento)";
+    // If maximoEndeudamiento is null, we cannot validate InformeProfesional type, so requirements can't be met.
+    if (allRequirementsSuccessfullyMet) {
+      allRequirementsSuccessfullyMet = false;
+      revalidatePath("/");
+    }
+    return;
+  }
+  requirements.push({
+    type: "InformeProfesional",
+    count: 1,
+    description: informeDesc,
+    specificValidation: (doc) => !!doc.validationMessage?.includes(expectedInformeType)
+  });
+
+  if (currentCompanyType === "agricultural") {
+    requirements.push({ type: "DICOSE", count: 1, description: "DICOSE" });
+    requirements.push({ type: "DETA", count: 1, description: "DETA", specificValidation: (doc) => doc.validationMessage?.includes("Ambas opiniones") }); // Based on DETA AI check success
+  }
+  if (currentCompanyType === "new") { // As per UI, new companies also need DICOSE
+    if (!requirements.some(r => r.type === "DICOSE")) {
+      requirements.push({ type: "DICOSE", count: 1, description: "DICOSE" });
+    }
+  }
+
+  let allCurrentlyMet = true;
+  for (const req of requirements) {
+    const validDocsOfType = currentDocs.filter(doc => doc.documentType === req.type && doc.isValid);
+    if (validDocsOfType.length < req.count) {
+      allCurrentlyMet = false;
+      break;
+    }
+    if (req.specificValidation) {
+      // For count > 1, this assumes any one valid doc passing specific validation is enough for that type.
+      // Or, if all docs of that type must pass, then .every() is needed.
+      // For simplicity, if count is met, check if at least one passes specificValidation.
+      // For InformeProfesional, count is 1, so this is fine.
+      if (!validDocsOfType.some(doc => req.specificValidation!(doc))) {
+        allCurrentlyMet = false;
+        break;
+      }
+    }
+  }
+
+  // Year consistency check for Balance and DICOSE if agricultural or new
+  if (allCurrentlyMet && (currentCompanyType === "agricultural" || currentCompanyType === "new")) {
+    const balanceDocs = currentDocs.filter(doc => doc.documentType === "Balance" && doc.isValid && doc.documentYear);
+    const dicoseDocs = currentDocs.filter(doc => doc.documentType === "DICOSE" && doc.isValid && doc.documentYear);
+
+    if (balanceDocs.length > 0 && dicoseDocs.length > 0) {
+      // Assuming for 'new' company with 3 balances, DICOSE should match at least one, or the latest.
+      // For simplicity, checking if all balance years are the same and DICOSE matches that year.
+      const uniqueBalanceYears = [...new Set(balanceDocs.map(d => d.documentYear))];
+      if (uniqueBalanceYears.length > 1 && currentCompanyType !== 'new') { // For 'new', multiple balance years are expected
+         // This condition might be too strict if different valid balances from different years are allowed and DICOSE matches one of them.
+         // For now, if not 'new', all balances must be same year as DICOSE.
+         //allCurrentlyMet = false; 
+         // console.log("Year inconsistency: Multiple balance years found when one expected for DICOSE matching.")
+      } else {
+        const targetYear = uniqueBalanceYears[0]; // Taking the first (or only) balance year
+        if (!dicoseDocs.some(dd => dd.documentYear === targetYear)) {
+          allCurrentlyMet = false;
+          // console.log(`Year inconsistency: DICOSE year does not match Balance year (${targetYear}).`);
+        }
+      }
+    } else if (requirements.some(r => r.type === "DICOSE") && dicoseDocs.length === 0) {
+        // If DICOSE is required but not present (already handled by count check, but good to be explicit)
+        allCurrentlyMet = false;
+    }
+  }
+
+  if (allRequirementsSuccessfullyMet !== allCurrentlyMet) {
+    allRequirementsSuccessfullyMet = allCurrentlyMet;
+    console.log(`[Actions] Overall requirements met status changed to: ${allRequirementsSuccessfullyMet}`);
+    revalidatePath("/");
+  }
+}
 
 export async function setCompanyType(type: "regular" | "agricultural" | "new") {
   selectedCompanyType = type
   revalidatePath("/")
+  await checkAndSetOverallValidationStatus(); // Check status on change
   return { success: true }
 }
 
@@ -43,7 +190,9 @@ export async function getCompanyType() {
 
 export async function resetCompanyType() {
   selectedCompanyType = null
+  allRequirementsSuccessfullyMet = false; // Reset status
   revalidatePath("/")
+  // No checkAndSet here as type is null
   return { success: true }
 }
 
@@ -55,6 +204,7 @@ export async function setMaximoEndeudamiento(amount: number | null) {
     maximoEndeudamiento = amount;
   }
   revalidatePath("/");
+  await checkAndSetOverallValidationStatus(); // Check status on change
   return { success: true, currentAmount: maximoEndeudamiento };
 }
 
@@ -603,7 +753,7 @@ export async function validateDocument(url: string, fileName: string, currentPla
       }
       documents.push(document)
       revalidatePath("/")
-
+      await checkAndSetOverallValidationStatus(); // Check status before returning
       return {
         success: true,
         isValid,
@@ -616,9 +766,51 @@ export async function validateDocument(url: string, fileName: string, currentPla
     let content = ""
     if (fileExtension === "txt") {
       content = await response.text()
+    } else if (fileExtension === "pdf") {
+      try {
+        const pdfBuffer = await response.arrayBuffer();
+        console.log(`[validateDocument] PDF buffer size: ${pdfBuffer.byteLength} bytes for file: ${fileName}`);
+        if (pdfBuffer.byteLength < 100) { // Heuristic: very small PDF might be corrupt or empty
+            isValid = false;
+            validationMessage = "El archivo PDF parece estar vacío o es inválido.";
+            content = fileName.toLowerCase(); // Fallback to filename for type detection, though it's marked invalid
+            console.warn(`[validateDocument] PDF file ${fileName} is very small (${pdfBuffer.byteLength} bytes), marking as invalid.`);
+        } else {
+            content = await extractTextFromPdfWithOpenAI(pdfBuffer);
+            if (!content || content.trim().length < 20) { // Arbitrary threshold for minimal content
+                console.warn(`[validateDocument] OCR for PDF ${fileName} returned very little or no content. Content: "${content}"`);
+                if (isValid) { // Only set this message if not already invalidated by buffer size check
+                  validationMessage = "La extracción de texto del PDF resultó en poco o ningún contenido. La validación puede ser limitada.";
+                }
+                // Fallback to filename if content is empty to allow document type detection, even if validation is limited
+                if (!content.trim()) content = fileName.toLowerCase();
+            } else {
+                 console.log(`[validateDocument] Successfully extracted text from PDF ${fileName}. Content length: ${content.length}`);
+            }
+        }
+      } catch (ocrError: any) {
+        console.error(`[validateDocument] Error during PDF OCR for ${fileName}:`, ocrError);
+        isValid = false; // Mark as invalid if OCR process itself fails
+        validationMessage = `Error al procesar el contenido del PDF: ${ocrError.message}. No se pudo extraer el texto para la validación.`;
+        content = fileName.toLowerCase(); // Fallback for document type detection
+      }
     } else {
-      // For PDF/DOC files, we'll analyze the filename and simulate content analysis
-      content = fileName.toLowerCase()
+      // For other DOC/DOCX/XLS/XLSX files, still using filename (or consider specific text extraction for these too)
+      content = fileName.toLowerCase();
+      if (isValid) { // Only set this message if not already invalidated
+        validationMessage = "La validación de contenido para este tipo de archivo (DOC, DOCX, XLS, XLSX) se basa actualmente en el nombre del archivo.";
+      }
+      console.log(`[validateDocument] Content for ${fileExtension} file '${fileName}' will be based on filename.`);
+    }
+
+    // An important check: if content is still empty or just whitespace after all attempts
+    if (!content.trim() && isValid) { 
+        console.warn(`[validateDocument] Content for ${fileName} is empty or whitespace after processing. Validation will be unreliable for type detection.`);
+        // Do not mark as invalid solely for empty content here, as some filename-based logic might still apply for type. 
+        // However, most content-based validations will fail later. If validationMessage is still the default or the one from DOC/XLS, update it.
+        if (validationMessage === "" || validationMessage.startsWith("La validación de contenido para este tipo de archivo")){
+            validationMessage = "El contenido del documento no pudo ser leído o está vacío. La validación será limitada.";
+        }
     }
 
     // Extract year from content - adapt for projections when type is known
@@ -1023,7 +1215,7 @@ Nuestra diferencia calculada: ${ourCalculatedDifference.toFixed(2)}. (La IA pudo
       url,
       uploadedAt: new Date().toISOString(),
       isValid,
-      validationMessage: isValid ? undefined : validationMessage,
+      validationMessage: isValid ? (validationMessage || `${documentType} validado.`) : validationMessage,
       documentType,
       companyType: selectedCompanyType === null ? undefined : selectedCompanyType,
       documentYear: documentYear === null ? undefined : documentYear,
@@ -1075,6 +1267,7 @@ Nuestra diferencia calculada: ${ourCalculatedDifference.toFixed(2)}. (La IA pudo
     
     // Revalidate the documents list for the client to refetch
     revalidatePath("/")
+    await checkAndSetOverallValidationStatus(); // Check status after document processing
 
     return {
       success: true,
@@ -1084,6 +1277,7 @@ Nuestra diferencia calculada: ${ourCalculatedDifference.toFixed(2)}. (La IA pudo
     }
   } catch (error) {
     console.error("Error de validación:", error)
+    await checkAndSetOverallValidationStatus(); // Check status even on error, as a doc might have been removed or state changed before error
     return {
       success: false,
       isValid: false,
@@ -1114,13 +1308,18 @@ export async function deleteDocument(id: string) {
 
       // Revalidate the documents list
       revalidatePath("/")
+      await checkAndSetOverallValidationStatus(); // Check status on delete
 
       return { success: true }
     } catch (error) {
       console.error("Delete error:", error)
+      // Optionally, re-check status here too if delete fails partially
+      await checkAndSetOverallValidationStatus();
       throw new Error("Failed to delete document")
     }
   } else {
+    // If document not found, status unlikely to change but a check is harmless if needed
+    // await checkAndSetOverallValidationStatus(); 
     throw new Error("Document not found")
   }
 }
